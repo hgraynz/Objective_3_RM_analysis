@@ -1,0 +1,142 @@
+---
+title: "Objective_3_RM_analysis"
+format: html
+editor: visual
+---
+
+## Setup
+
+Adjust `input_path` below to point at your combined RM annotation CSV.
+
+```{r}
+#| label: libraries
+
+library(tidyverse)
+library(janitor)
+library(gt)
+
+```
+
+
+```{r}
+#| label: setup
+
+input_path <- "~/Objective_3/Objective_3_RM_analysis/data/all.rm.genes.concatRpt.tsv"   # <-- change this to your actual file path
+
+df <- read_tsv(input_path, show_col_types = FALSE) %>%
+  clean_names()   # -> sample, operon, gene, system_type, gene_type,
+                  #    hmm, evalue, predicted_methylation,
+                  #    prediction_confidence, rebase_homolog,
+                  #    homolog_identity_percent, homolog_methylation,
+                  #    homolog_motif
+
+# derive contig from the Gene locus tag, e.g. "contig_1_2542" -> "contig_1"
+df <- df %>%
+  mutate(contig = str_extract(gene, "^contig_[0-9]+"))
+
+n_isolates <- n_distinct(df$sample)
+n_hmm <- n_distinct(df$hmm)
+```
+
+
+This dataset covers **`r n_isolates`** isolates and **`r n_hmm`** distinct HMM models.
+
+## 1. Gene type counts per isolate, per contig
+
+Counts of each gene type (RE, MT, SP, IIG) found on each contig, within each isolate.
+
+```{r}
+#| label: gene-type-by-contig
+
+gene_type_by_contig <- df %>%
+  count(sample, contig, gene_type) %>%
+  pivot_wider(names_from = gene_type, values_from = n, values_fill = 0) %>%
+  arrange(sample, contig)
+
+gene_type_by_contig
+```
+
+
+## 2. System type totals per isolate
+
+Counts of each system type (RM_Type_I, RM_Type_II, RM_Type_IIG, Type_IV) per isolate, with a row total.
+
+```{r}
+#| label: system-type-totals
+
+system_type_totals <- df %>%
+  count(sample, system_type) %>%
+  pivot_wider(names_from = system_type, values_from = n, values_fill = 0) %>%
+  mutate(Total = rowSums(across(where(is.numeric)))) %>%
+  arrange(sample)
+
+system_type_totals
+```
+
+
+## 3. Operon-level summary
+
+One row per isolate x operon, showing the operon's system type(s), contig(s), gene types present, gene count, and whether any gene in the operon has a methylation call.
+
+```{r}
+#| label: operon-summary
+
+operon_summary <- df %>%
+  group_by(sample, operon) %>%
+  summarise(
+    contigs        = paste(sort(unique(contig)), collapse = ";"),
+    operon_type    = paste(sort(unique(system_type)), collapse = ";"),
+    gene_types     = paste(sort(unique(gene_type)), collapse = ";"),
+    n_genes        = n(),
+    has_methylation_call = any(!is.na(predicted_methylation) & predicted_methylation != ""),
+    .groups = "drop"
+  ) %>%
+  arrange(sample, operon)
+
+operon_summary
+```
+
+## 4. HMM inventory
+
+### 4a. Overall counts across all isolates
+
+```{r}
+#| label: hmm-overall
+
+hmm_inventory_overall <- df %>%
+  count(hmm, sort = TRUE) %>%
+  rename(n_occurrences = n)
+
+hmm_inventory_overall %>%
+  gt() %>%
+  tab_header(title = "Distinct HMM models identified across all isolates")
+```
+
+### 4b. Per-isolate breakdown
+
+```{r}
+#| label: hmm-by-isolate
+
+hmm_inventory_by_isolate <- df %>%
+  count(sample, hmm) %>%
+  pivot_wider(names_from = hmm, values_from = n, values_fill = 0) %>%
+  arrange(sample)
+
+hmm_inventory_by_isolate
+```
+
+::: {.callout-note}
+The raw `hmm` column already condenses to ~16 distinct models across the whole dataset — no further grouping needed. Note that HMM family suffixes (e.g. `_FAM_4` vs `_FAM_1`) denote genuinely different, unrelated HMM families rather than variants of the same model, so they should **not** be collapsed together.
+:::
+
+## Export tables
+
+```{r}
+#| label: export
+
+write_csv(gene_type_by_contig,      "data/1_gene_type_by_contig.csv")
+write_csv(system_type_totals,       "data/2_system_type_totals.csv")
+write_csv(operon_summary,           "data/3_operon_summary.csv")
+write_csv(hmm_inventory_overall,    "data/4a_hmm_inventory_overall.csv")
+write_csv(hmm_inventory_by_isolate, "data/4b_hmm_inventory_by_isolate.csv")
+```
