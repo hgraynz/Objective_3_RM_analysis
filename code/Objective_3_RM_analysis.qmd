@@ -9,17 +9,11 @@ editor: visual
 Adjust `input_path` below to point at your combined RM annotation CSV.
 
 ```{r}
-#| label: libraries
+#| label: setup
 
 library(tidyverse)
 library(janitor)
 library(gt)
-
-```
-
-
-```{r}
-#| label: setup
 
 input_path <- "~/Objective_3/Objective_3_RM_analysis/data/all.rm.genes.concatRpt.tsv"   # <-- change this to your actual file path
 
@@ -30,6 +24,11 @@ df <- read_tsv(input_path, show_col_types = FALSE) %>%
                   #    homolog_identity_percent, homolog_methylation,
                   #    homolog_motif
 
+# remove "fix_" prefix from sample IDs (e.g. "fix_EcCa437a" -> "EcCa437a")
+# so they match the metadata's Isolate_ID directly
+df <- df %>%
+  mutate(sample = str_remove(sample, "^fix_"))
+
 # derive contig from the Gene locus tag, e.g. "contig_1_2542" -> "contig_1"
 df <- df %>%
   mutate(contig = str_extract(gene, "^contig_[0-9]+"))
@@ -37,7 +36,6 @@ df <- df %>%
 n_isolates <- n_distinct(df$sample)
 n_hmm <- n_distinct(df$hmm)
 ```
-
 
 This dataset covers **`r n_isolates`** isolates and **`r n_hmm`** distinct HMM models.
 
@@ -56,6 +54,37 @@ gene_type_by_contig <- df %>%
 gene_type_by_contig
 ```
 
+## 1b. Chromosome vs plasmid tables
+
+`contig_1` is treated as the chromosome; every other contig is treated as a plasmid. Isolates can have multiple plasmid contigs, so the plasmid table aggregates gene type counts per isolate across all non-chromosome contigs (with a `n_plasmid_contigs` column showing how many distinct plasmid contigs contributed).
+
+```{r}
+#| label: chromosome-vs-plasmid
+
+df <- df %>%
+  mutate(replicon_type = if_else(contig == "contig_1", "Chromosome", "Plasmid"))
+
+# Chromosome table: one row per isolate, gene type counts on contig_1 only
+chromosome_gene_types <- df %>%
+  filter(replicon_type == "Chromosome") %>%
+  count(sample, gene_type) %>%
+  pivot_wider(names_from = gene_type, values_from = n, values_fill = 0) %>%
+  arrange(sample)
+
+# Plasmid table: one row per isolate, gene type counts summed across all
+# non-chromosome contigs, plus a count of how many plasmid contigs were found
+plasmid_gene_types <- df %>%
+  filter(replicon_type == "Plasmid") %>%
+  group_by(sample) %>%
+  mutate(n_plasmid_contigs = n_distinct(contig)) %>%
+  ungroup() %>%
+  count(sample, n_plasmid_contigs, gene_type) %>%
+  pivot_wider(names_from = gene_type, values_from = n, values_fill = 0) %>%
+  arrange(sample)
+
+chromosome_gene_types
+plasmid_gene_types
+```
 
 ## 2. System type totals per isolate
 
@@ -72,7 +101,6 @@ system_type_totals <- df %>%
 
 system_type_totals
 ```
-
 
 ## 3. Operon-level summary
 
@@ -128,20 +156,6 @@ hmm_inventory_by_isolate
 ::: {.callout-note}
 The raw `hmm` column already condenses to ~16 distinct models across the whole dataset — no further grouping needed. Note that HMM family suffixes (e.g. `_FAM_4` vs `_FAM_1`) denote genuinely different, unrelated HMM families rather than variants of the same model, so they should **not** be collapsed together.
 :::
-
-## Export tables
-
-```{r}
-#| label: export
-
-write_csv(gene_type_by_contig,      "data/1_gene_type_by_contig.csv")
-write_csv(system_type_totals,       "data/2_system_type_totals.csv")
-write_csv(operon_summary,           "data/3_operon_summary.csv")
-write_csv(hmm_inventory_overall,    "data/4a_hmm_inventory_overall.csv")
-write_csv(hmm_inventory_by_isolate, "data/4b_hmm_inventory_by_isolate.csv")
-```
-
-
 
 ## 5. Heatmaps
 
@@ -211,6 +225,90 @@ pheatmap(
 
 If `pheatmap` isn't installed, run `install.packages("pheatmap")` first.
 
+## 6. HMM heatmap with metadata colour strips
+
+This adds isolate-level metadata (e.g. species, source, collection site) as colour strips alongside the HMM heatmap from 5a. Uses `patchwork` to stack the strips and the heatmap so isolate rows line up exactly.
+
+**Adjust the placeholders marked below to match your actual metadata file and column names.**
+
+```{r}
+#| label: hmm-heatmap-metadata
+#| fig-width: 11
+#| fig-height: 18
+
+library(patchwork)
+
+# ---- 1. Read metadata -----------------------------------------------
+metadata_path <- "data/isolate_metadata.csv"   # <-- change to your actual metadata file path
+metadata <- read_csv("~/Objective_3/Objective_3_RM_analysis/data/metadata_Apr26.csv", show_col_types = FALSE) %>%
+  clean_names()   # -> isolate_id, farm_id, sample_site, total_length, total_contigs,
+                   #    gc_percent, n50, l90, sbi, lactose, sorbitol, surcrose, stx_gene
+
+# Join key: df$sample and metadata's isolate_id now match directly
+# (both e.g. "EcCa437a") since the "fix_" prefix was stripped in Setup.
+metadata <- metadata %>%
+  rename(sample = isolate_id) %>%
+  mutate(farm_id = as.factor(farm_id))   # farm ID is categorical, not numeric
+
+# Columns to show as colour strips - add/remove as needed
+annotation_vars <- c("sample_site", "sbi", "stx_gene")
+
+# ---- 2. Join metadata onto the HMM long-format counts ----------------
+hmm_counts_long_annot <- df %>%
+  count(sample, hmm) %>%
+  complete(sample, hmm, fill = list(n = 0)) %>%
+  left_join(metadata, by = "sample")
+
+# Fix isolate ordering so every panel below shares the same y-axis order
+isolate_order <- sort(unique(hmm_counts_long_annot$sample))
+hmm_counts_long_annot <- hmm_counts_long_annot %>%
+  mutate(sample = factor(sample, levels = isolate_order))
+
+# ---- 3. Main HMM heatmap ---------------------------------------------
+main_heatmap <- ggplot(hmm_counts_long_annot, aes(x = hmm, y = sample, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "grey95", high = "darkred", name = "Copies") +
+  labs(x = "HMM model", y = NULL) +
+  theme_minimal(base_size = 9) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 4),
+    panel.grid = element_blank(),
+    legend.position = "right"
+  )
+
+# ---- 4. One narrow colour-strip panel per annotation variable ---------
+make_strip <- function(var) {
+  strip_data <- hmm_counts_long_annot %>%
+    distinct(sample, .data[[var]])
+
+  ggplot(strip_data, aes(x = 1, y = sample, fill = .data[[var]])) +
+    geom_tile(color = "white", linewidth = 0.1) +
+    labs(x = NULL, y = NULL, fill = var) +
+    theme_minimal(base_size = 9) +
+    theme(
+      axis.text.x = element_blank(),
+      axis.text.y = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "right"
+    )
+}
+
+strip_plots <- lapply(annotation_vars, make_strip)
+
+# ---- 5. Combine strips + main heatmap side by side --------------------
+# Strips are narrow, main heatmap is wide - widths reflect that
+combined_plot <- wrap_plots(
+  c(strip_plots, list(main_heatmap)),
+  nrow = 1,
+  widths = c(rep(0.3, length(strip_plots)), 10)
+)
+
+combined_plot
+```
+
+If `patchwork` isn't installed, run `install.packages("patchwork")` first. The `make_strip()` helper works for any number of annotation variables — just add or remove names from `annotation_vars`, no other code changes needed.
 
 ## 7. System type heatmap
 
@@ -262,7 +360,6 @@ pheatmap(
   main = "RM system type counts across isolates (clustered)"
 )
 ```
-
 
 ## 8. Gene type heatmap (by isolate, not contig)
 
@@ -323,4 +420,3 @@ pheatmap(
   main = "Gene type counts across isolates (clustered)"
 )
 ```
-
