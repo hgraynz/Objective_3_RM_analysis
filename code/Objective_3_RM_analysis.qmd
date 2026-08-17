@@ -140,3 +140,187 @@ write_csv(operon_summary,           "data/3_operon_summary.csv")
 write_csv(hmm_inventory_overall,    "data/4a_hmm_inventory_overall.csv")
 write_csv(hmm_inventory_by_isolate, "data/4b_hmm_inventory_by_isolate.csv")
 ```
+
+
+
+## 5. Heatmaps
+
+### 5a. HMM counts per isolate — ggplot2
+
+A tile heatmap of every isolate x HMM combination, coloured by how many copies of that HMM were found. Missing combinations are filled with 0 (absence) via `complete()`, so every isolate x HMM cell is represented even if it never appeared in the raw data.
+
+```{r}
+#| label: hmm-heatmap-ggplot
+#| fig-width: 10
+#| fig-height: 18
+
+hmm_counts_long <- df %>%
+  count(sample, hmm) %>%
+  complete(sample, hmm, fill = list(n = 0))
+
+ggplot(hmm_counts_long, aes(x = hmm, y = sample, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "grey95", high = "darkred", name = "Copies") +
+  labs(x = "HMM model", y = "Isolate",
+       title = "HMM copy number per isolate") +
+  theme_minimal(base_size = 9) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 4),   # 139 isolates - keep labels tiny
+    panel.grid = element_blank()
+  )
+```
+
+With 139 isolates the y-axis labels will be very small — this view is mainly for spotting overall patterns/outliers rather than reading individual isolate names off the plot. Use the `pheatmap` version below to reorder isolates by similarity, which usually makes patterns much easier to see, or filter `hmm_counts_long` to a subset of isolates first if you want a readable static figure.
+
+### 5b. HMM presence/absence with clustering — pheatmap
+
+`pheatmap` automatically performs hierarchical clustering on both rows (isolates) and columns (HMMs), so isolates with similar RM system profiles group together, and reveals which HMMs tend to co-occur. This uses presence/absence (0/1) rather than raw counts, which is usually cleaner for clustering — switch `binary_matrix` for `count_matrix` (commented below) if you want clustering based on copy number instead.
+
+```{r}
+#| label: hmm-heatmap-pheatmap
+#| fig-width: 10
+#| fig-height: 20
+
+library(pheatmap)
+
+# Wide matrix: isolates as rows, HMMs as columns
+hmm_wide <- df %>%
+  count(sample, hmm) %>%
+  pivot_wider(names_from = hmm, values_from = n, values_fill = 0)
+
+count_matrix <- hmm_wide %>%
+  select(-sample) %>%
+  as.matrix()
+rownames(count_matrix) <- hmm_wide$sample
+
+binary_matrix <- (count_matrix > 0) * 1   # presence/absence
+
+pheatmap(
+  binary_matrix,                 # swap for count_matrix to cluster on copy number
+  color = c("grey95", "darkred"),
+  legend_breaks = c(0, 1),
+  legend_labels = c("Absent", "Present"),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 3,               # small - 139 isolates
+  fontsize_col = 8,
+  main = "HMM presence/absence across isolates (clustered)"
+)
+```
+
+If `pheatmap` isn't installed, run `install.packages("pheatmap")` first.
+
+
+## 7. System type heatmap
+
+Same treatment as the HMM heatmap in Section 5, but using the `system_type_totals` table (RM_Type_I, RM_Type_II, RM_Type_IIG, Type_IV counts per isolate) instead of individual HMMs. With only 4-5 system type columns this is a much narrower heatmap than the HMM one.
+
+### 7a. System type counts per isolate — ggplot2
+
+```{r}
+#| label: system-type-heatmap-ggplot
+#| fig-width: 6
+#| fig-height: 18
+
+system_type_long <- system_type_totals %>%
+  select(-Total) %>%
+  pivot_longer(-sample, names_to = "system_type", values_to = "n")
+
+ggplot(system_type_long, aes(x = system_type, y = sample, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "grey95", high = "darkblue", name = "Count") +
+  labs(x = "System type", y = "Isolate",
+       title = "RM system type counts per isolate") +
+  theme_minimal(base_size = 9) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 4),   # 139 isolates - keep labels tiny
+    panel.grid = element_blank()
+  )
+```
+
+### 7b. System type counts with clustering — pheatmap
+
+```{r}
+#| label: system-type-heatmap-pheatmap
+#| fig-width: 8
+#| fig-height: 20
+
+system_type_matrix <- system_type_totals %>%
+  select(-Total) %>%
+  column_to_rownames("sample") %>%
+  as.matrix()
+
+pheatmap(
+  system_type_matrix,
+  color = colorRampPalette(c("grey95", "darkblue"))(50),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 3,               # small - 139 isolates
+  fontsize_col = 9,
+  main = "RM system type counts across isolates (clustered)"
+)
+```
+
+
+## 8. Gene type heatmap (by isolate, not contig)
+
+Same idea as Section 1's `gene_type_by_contig`, but collapsed across contigs so there's one row per isolate rather than one row per isolate x contig. This gives total counts of each gene type (RE, MT, SP, IIG) per isolate, regardless of which contig they're on.
+
+```{r}
+#| label: gene-type-by-isolate
+
+gene_type_by_isolate <- df %>%
+  count(sample, gene_type) %>%
+  pivot_wider(names_from = gene_type, values_from = n, values_fill = 0) %>%
+  arrange(sample)
+
+gene_type_by_isolate
+```
+
+### 8a. Gene type counts per isolate — ggplot2
+
+```{r}
+#| label: gene-type-heatmap-ggplot
+#| fig-width: 6
+#| fig-height: 18
+
+gene_type_long <- gene_type_by_isolate %>%
+  pivot_longer(-sample, names_to = "gene_type", values_to = "n")
+
+ggplot(gene_type_long, aes(x = gene_type, y = sample, fill = n)) +
+  geom_tile(color = "white", linewidth = 0.1) +
+  scale_fill_gradient(low = "grey95", high = "darkgreen", name = "Count") +
+  labs(x = "Gene type", y = "Isolate",
+       title = "Gene type counts per isolate") +
+  theme_minimal(base_size = 9) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 4),   # 139 isolates - keep labels tiny
+    panel.grid = element_blank()
+  )
+```
+
+### 8b. Gene type counts with clustering — pheatmap
+
+```{r}
+#| label: gene-type-heatmap-pheatmap
+#| fig-width: 8
+#| fig-height: 20
+
+gene_type_matrix <- gene_type_by_isolate %>%
+  column_to_rownames("sample") %>%
+  as.matrix()
+
+pheatmap(
+  gene_type_matrix,
+  color = colorRampPalette(c("grey95", "darkgreen"))(50),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 3,               # small - 139 isolates
+  fontsize_col = 9,
+  main = "Gene type counts across isolates (clustered)"
+)
+```
+
