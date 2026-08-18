@@ -420,3 +420,185 @@ pheatmap(
   main = "Gene type counts across isolates (clustered)"
 )
 ```
+
+
+
+## 9. PCoA of HMM profiles
+
+Rather than a strict 0/1 presence/absence matrix, this builds an isolate x HMM **count** matrix (copy number of each HMM per isolate), then uses **Bray-Curtis dissimilarity** so isolates that differ in *how many* copies of an HMM they carry (not just whether they carry it at all) end up further apart in the ordination.
+
+```{r}
+#| label: hmm-dist-matrix
+#| fig-width: 8
+#| fig-height: 7
+
+library(vegan)
+library(ape)
+
+# ---- 1. Build isolate x HMM count matrix -------------------------
+hmm_pcoa_wide <- df %>%
+  count(sample, hmm) %>%
+  pivot_wider(names_from = hmm, values_from = n, values_fill = 0)
+
+hmm_pcoa_matrix <- hmm_pcoa_wide %>%
+  select(-sample) %>%
+  as.matrix()
+rownames(hmm_pcoa_matrix) <- hmm_pcoa_wide$sample
+
+# ---- 2. Bray-Curtis dissimilarity (weights by copy number) -----
+hmm_dist <- vegdist(hmm_pcoa_matrix, method = "bray")
+
+# View as a regular isolate x isolate matrix
+hmm_dist_matrix <- as.matrix(hmm_dist)
+hmm_dist_matrix[1:5, 1:5]   # preview - full matrix is 139 x 139
+```
+
+### 9a. Distance matrix heatmap
+
+A quick visual check of the distance matrix itself before running the PCoA — darker cells mean more dissimilar HMM profiles between that pair of isolates. Diagonal is always 0 (an isolate compared to itself).
+
+```{r}
+#| label: hmm-dist-heatmap
+#| fig-width: 10
+#| fig-height: 10
+
+pheatmap(
+  hmm_dist_matrix,
+  color = colorRampPalette(c("white", "firebrick"))(50),
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  fontsize_row = 3,
+  fontsize_col = 3,
+  main = "Bray-Curtis dissimilarity between isolates (HMM copy number)"
+)
+```
+
+### 9b. PCoA
+
+```{r}
+#| label: hmm-pcoa
+#| fig-width: 8
+#| fig-height: 7
+
+# ---- 3. PCoA -------------------------------------------------------
+hmm_pcoa <- pcoa(hmm_dist)
+
+# % variance explained by first two axes
+var_explained <- round(hmm_pcoa$values$Relative_eig[1:2] * 100, 1)
+
+pcoa_scores <- as.data.frame(hmm_pcoa$vectors[, 1:2])
+colnames(pcoa_scores) <- c("PCo1", "PCo2")
+pcoa_scores$sample <- rownames(pcoa_scores)
+
+# Join sample_site from metadata (built in Section 6) so points can be coloured
+pcoa_scores <- pcoa_scores %>%
+  left_join(metadata %>% select(sample, sample_site), by = "sample")
+
+# ---- 4. Add jittered coordinates (fixed seed) ------------------------
+# Baked into pcoa_scores itself, not applied via ggplot's position_jitter,
+# so any later plot reusing PCo1_jitter/PCo2_jitter keeps points in the
+# exact same place as this plot.
+set.seed(42)
+jitter_amount_x <- diff(range(pcoa_scores$PCo1)) * 0.05
+jitter_amount_y <- diff(range(pcoa_scores$PCo2)) * 0.05
+
+pcoa_scores <- pcoa_scores %>%
+  mutate(
+    PCo1_jitter = jitter(PCo1, amount = jitter_amount_x),
+    PCo2_jitter = jitter(PCo2, amount = jitter_amount_y)
+  )
+
+# ---- 5. Custom colour palette ---------------------------------------
+Sample_site_colours <- c(
+  "Farm"     = "#88ccee",
+  "Lairage" = "#44aa99",
+  "Hide"  = "#DDCC77",
+  "Pre_intervention" = "#cc6677",
+  "Post_intervention" = "#332288"
+)
+
+# ---- 6. Plot -----------------------------------------------------------
+ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = sample_site)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = Sample_site_colours, name = "Sample site") +
+  labs(
+    x = paste0("PCo1 (", var_explained[1], "%, jittered)"),
+    y = paste0("PCo2 (", var_explained[2], "%, jittered)"),
+    title = "PCoA of HMM copy-number profiles (Bray-Curtis dissimilarity)"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+If `vegan` or `ape` aren't installed, run `install.packages(c("vegan", "ape"))` first.
+
+Points that sit on top of each other or very close together represent isolates with near-identical HMM profiles (e.g. your `a`/`b`/`c` replicate series are a good candidate to check for tight clustering here). Two axes are plotted by default (`PCo1`/`PCo2`), but `hmm_pcoa$values` holds the full eigenvalue table if you want to check how much variance further axes explain, and `pcoa_scores` can be extended to plot PCo1 vs PCo3, etc.
+
+Points are jittered (small random offset) so overlapping isolates are still visible as separate dots, and coloured by `sample_site` using your custom palette (`Sample_site_colours`). The jitter uses a fixed seed (`set.seed(42)`) and is stored directly in `pcoa_scores$PCo1_jitter`/`PCo2_jitter`, so any later plot you build off `pcoa_scores` in this document will place the same isolate at the same position every time — just reuse those two columns rather than re-jittering `PCo1`/`PCo2` freshly, which would give a different random offset. To colour by a different metadata variable instead (e.g. `sbi`, `farm_id`, `stx_gene`), swap `sample_site` for that column name in both the `select()` in the join and the `aes(color = ...)` call, and provide a matching named colour vector for it.
+
+
+```{r}
+#| label: hmm-pcoa-sbi
+#| fig-width: 8
+#| fig-height: 7
+
+# Join sbi from metadata onto the existing pcoa_scores
+pcoa_scores <- pcoa_scores %>%
+  left_join(metadata %>% select(sample, sbi), by = "sample")
+
+# ---- Custom colour palette ---------------------------------------
+SBI_colours <- c(
+  "AWY2a" = "#2CA02C",
+  "AY2a"  = "#1F77B4",
+  "WY12a" = "#AEC7E8",
+  "ASY2c" = "#FF7F0E",
+  "SY2c"  = "#FFBB78"
+)
+
+# ---- Plot -----------------------------------------------------------
+ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = sbi)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = SBI_colours, name = "SBI") +
+  labs(
+    x = paste0("PCo1 (", var_explained[1], "%, jittered)"),
+    y = paste0("PCo2 (", var_explained[2], "%, jittered)"),
+    title = "PCoA of HMM copy-number profiles (Bray-Curtis dissimilarity)"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+
+
+### 9d. PCoA coloured by Stx gene
+
+Same underlying points again (identical `PCo1_jitter`/`PCo2_jitter` positions), coloured by `stx_gene` instead.
+
+```{r}
+#| label: hmm-pcoa-stx
+#| fig-width: 8
+#| fig-height: 7
+
+# Join stx_gene from metadata onto the existing pcoa_scores
+pcoa_scores <- pcoa_scores %>%
+  left_join(metadata %>% select(sample, stx_gene), by = "sample")
+
+# ---- Custom colour palette ---------------------------------------
+Stx_colours <- c(
+  "Absent" = "#FF0800",
+  "Stx2c" = "#6610F2",
+  "Stx1a_and_2a" = "#410200",
+  "Stx2a"  = "#F17105"
+)
+
+# ---- Plot -----------------------------------------------------------
+ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = stx_gene)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_manual(values = Stx_colours, name = "Stx gene") +
+  labs(
+    x = paste0("PCo1 (", var_explained[1], "%, jittered)"),
+    y = paste0("PCo2 (", var_explained[2], "%, jittered)"),
+    title = "PCoA of HMM copy-number profiles (Bray-Curtis dissimilarity)"
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+
