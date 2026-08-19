@@ -153,8 +153,8 @@ hmm_inventory_by_isolate <- df %>%
 hmm_inventory_by_isolate
 ```
 
-::: {.callout-note}
-The raw `hmm` column already condenses to ~16 distinct models across the whole dataset — no further grouping needed. Note that HMM family suffixes (e.g. `_FAM_4` vs `_FAM_1`) denote genuinely different, unrelated HMM families rather than variants of the same model, so they should **not** be collapsed together.
+::: callout-note
+The raw `hmm` column already condenses to \~16 distinct models across the whole dataset — no further grouping needed. Note that HMM family suffixes (e.g. `_FAM_4` vs `_FAM_1`) denote genuinely different, unrelated HMM families rather than variants of the same model, so they should **not** be collapsed together.
 :::
 
 ## 5. Heatmaps
@@ -421,8 +421,6 @@ pheatmap(
 )
 ```
 
-
-
 ## 9. PCoA of HMM profiles
 
 Rather than a strict 0/1 presence/absence matrix, this builds an isolate x HMM **count** matrix (copy number of each HMM per isolate), then uses **Bray-Curtis dissimilarity** so isolates that differ in *how many* copies of an HMM they carry (not just whether they carry it at all) end up further apart in the ordination.
@@ -481,10 +479,22 @@ pheatmap(
 #| fig-height: 7
 
 # ---- 3. PCoA -------------------------------------------------------
-hmm_pcoa <- pcoa(hmm_dist)
+# Bray-Curtis is non-Euclidean, so classical PCoA can produce negative
+# eigenvalues - when that happens, the raw Relative_eig percentages can
+# sum to over 100% (a known artefact, not an error). The Cailliez
+# correction shifts all eigenvalues non-negative first, so the corrected
+# percentages (Rel_corr_eig) behave properly and sum to <=100%.
+hmm_pcoa <- pcoa(hmm_dist, correction = "cailliez")
 
-# % variance explained by first two axes
-var_explained <- round(hmm_pcoa$values$Relative_eig[1:2] * 100, 1)
+# Check whether a correction was actually needed/applied
+hmm_pcoa$note
+
+# % variance explained by first two axes - use corrected values if present
+if ("Rel_corr_eig" %in% colnames(hmm_pcoa$values)) {
+  var_explained <- round(hmm_pcoa$values$Rel_corr_eig[1:2] * 100, 1)
+} else {
+  var_explained <- round(hmm_pcoa$values$Relative_eig[1:2] * 100, 1)
+}
 
 pcoa_scores <- as.data.frame(hmm_pcoa$vectors[, 1:2])
 colnames(pcoa_scores) <- c("PCo1", "PCo2")
@@ -529,12 +539,12 @@ ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = sample_site)) 
   theme_minimal(base_size = 11)
 ```
 
+
 If `vegan` or `ape` aren't installed, run `install.packages(c("vegan", "ape"))` first.
 
 Points that sit on top of each other or very close together represent isolates with near-identical HMM profiles (e.g. your `a`/`b`/`c` replicate series are a good candidate to check for tight clustering here). Two axes are plotted by default (`PCo1`/`PCo2`), but `hmm_pcoa$values` holds the full eigenvalue table if you want to check how much variance further axes explain, and `pcoa_scores` can be extended to plot PCo1 vs PCo3, etc.
 
 Points are jittered (small random offset) so overlapping isolates are still visible as separate dots, and coloured by `sample_site` using your custom palette (`Sample_site_colours`). The jitter uses a fixed seed (`set.seed(42)`) and is stored directly in `pcoa_scores$PCo1_jitter`/`PCo2_jitter`, so any later plot you build off `pcoa_scores` in this document will place the same isolate at the same position every time — just reuse those two columns rather than re-jittering `PCo1`/`PCo2` freshly, which would give a different random offset. To colour by a different metadata variable instead (e.g. `sbi`, `farm_id`, `stx_gene`), swap `sample_site` for that column name in both the `select()` in the join and the `aes(color = ...)` call, and provide a matching named colour vector for it.
-
 
 ```{r}
 #| label: hmm-pcoa-sbi
@@ -565,8 +575,6 @@ ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = sbi)) +
   ) +
   theme_minimal(base_size = 11)
 ```
-
-
 
 ### 9d. PCoA coloured by Stx gene
 
@@ -600,5 +608,3 @@ ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = stx_gene)) +
   ) +
   theme_minimal(base_size = 11)
 ```
-
-
