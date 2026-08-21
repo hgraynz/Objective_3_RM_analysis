@@ -608,3 +608,203 @@ ggplot(pcoa_scores, aes(x = PCo1_jitter, y = PCo2_jitter, color = stx_gene)) +
   ) +
   theme_minimal(base_size = 11)
 ```
+
+
+## 10. SBI-level condensed summary (Table 1 style)
+
+Modelled on Table 1 of [Galeone et al. 2025](https://pmc.ncbi.nlm.nih.gov/articles/PMC12016153/), which lists the actual detected motifs per sample rather than counts. Here, one row per `SBI` type, with the actual distinct gene types, system types, and HMMs found across all isolates of that SBI written out (comma-separated) rather than tallied.
+
+```{r}
+#| label: sbi-condensed-table
+
+sbi_condensed <- df %>%
+  left_join(metadata %>% select(sample, sbi), by = "sample") %>%
+  group_by(sbi) %>%
+  summarise(
+    `Gene type`   = paste(sort(unique(gene_type)), collapse = ", "),
+    `System type` = paste(sort(unique(system_type)), collapse = ", "),
+    HMM           = paste(sort(unique(hmm)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  rename(SBI = sbi) %>%
+  arrange(SBI)
+
+sbi_condensed %>%
+  gt() %>%
+  tab_header(title = "RM system components by SBI type") %>%
+  cols_align(align = "left", columns = everything())
+```
+
+
+## 10c. SBI-level condensed summary with % of isolates
+
+Since SBI groups contain very different numbers of isolates, raw counts (10b) aren't directly comparable across groups. This version instead shows, for each value, **the percentage of isolates within that SBI group that carry it at least once** (presence-based, not summed occurrences) — a fairer basis for comparing SBI types of different sizes.
+
+```{r}
+#| label: sbi-condensed-table-pct
+
+# Rebuilt here so this chunk doesn't depend on 10b having run first
+sbi_meta <- df %>%
+  left_join(metadata %>% select(sample, sbi), by = "sample")
+
+# Number of isolates per SBI (restricted to isolates actually present in the RM data)
+sbi_n_isolates <- metadata %>%
+  filter(sample %in% unique(df$sample)) %>%
+  distinct(sample, sbi) %>%
+  count(sbi, name = "n_isolates")
+
+# Helper: % of isolates in each SBI group carrying each distinct value at least once
+pct_isolates_with <- function(value_col, out_name) {
+  sbi_meta %>%
+    distinct(sample, sbi, {{ value_col }}) %>%
+    count(sbi, {{ value_col }}, name = "n_with") %>%
+    left_join(sbi_n_isolates, by = "sbi") %>%
+    mutate(pct = round(100 * n_with / n_isolates, 0)) %>%
+    arrange(sbi, {{ value_col }}) %>%
+    group_by(sbi) %>%
+    summarise(
+      "{out_name}" := paste0({{ value_col }}, " (", pct, "%)", collapse = ", "),
+      .groups = "drop"
+    )
+}
+
+sbi_gene_type_pct   <- pct_isolates_with(gene_type, "Gene type")
+sbi_system_type_pct <- pct_isolates_with(system_type, "System type")
+sbi_hmm_pct         <- pct_isolates_with(hmm, "HMM")
+
+sbi_condensed_pct <- sbi_gene_type_pct %>%
+  left_join(sbi_system_type_pct, by = "sbi") %>%
+  left_join(sbi_hmm_pct, by = "sbi") %>%
+  left_join(sbi_n_isolates, by = "sbi") %>%
+  rename(SBI = sbi, `n isolates` = n_isolates) %>%
+  arrange(SBI)
+
+sbi_condensed_pct %>%
+  gt() %>%
+  tab_header(title = "RM system components by SBI type (% of isolates)") %>%
+  cols_align(align = "left", columns = everything())
+```
+
+
+
+## 10d. SBI-level condensed summary with mean occurrences per isolate
+
+Rather than presence (10c), this shows the **average number of occurrences per isolate** within each SBI group — e.g. if `GmrSD_N` averages 2.4 in a group, isolates in that group typically carry more than one copy. Isolates with zero copies of a value are included as 0 in the average (via `complete()`), not skipped, so this is a true per-isolate mean across the whole group, not just among isolates that happen to carry it.
+
+```{r}
+#| label: sbi-condensed-table-mean
+
+# Helper: mean occurrences per isolate within each SBI group
+mean_occurrences <- function(value_col, out_name) {
+  per_isolate_counts <- sbi_meta %>%
+    count(sbi, sample, {{ value_col }}) %>%
+    complete(nesting(sbi, sample), {{ value_col }}, fill = list(n = 0))
+
+  per_isolate_counts %>%
+    group_by(sbi, {{ value_col }}) %>%
+    summarise(mean_n = round(mean(n), 1), .groups = "drop") %>%
+    arrange(sbi, {{ value_col }}) %>%
+    group_by(sbi) %>%
+    summarise(
+      "{out_name}" := paste0({{ value_col }}, " (", mean_n, ")", collapse = ", "),
+      .groups = "drop"
+    )
+}
+
+sbi_gene_type_mean   <- mean_occurrences(gene_type, "Gene type")
+sbi_system_type_mean <- mean_occurrences(system_type, "System type")
+sbi_hmm_mean         <- mean_occurrences(hmm, "HMM")
+
+sbi_condensed_mean <- sbi_gene_type_mean %>%
+  left_join(sbi_system_type_mean, by = "sbi") %>%
+  left_join(sbi_hmm_mean, by = "sbi") %>%
+  left_join(sbi_n_isolates, by = "sbi") %>%
+  rename(SBI = sbi, `n isolates` = n_isolates) %>%
+  arrange(SBI)
+
+sbi_condensed_mean %>%
+  gt() %>%
+  tab_header(title = "RM system components by SBI type (mean occurrences per isolate)") %>%
+  cols_align(align = "left", columns = everything())
+
+write_csv(sbi_condensed_mean, "data/sbi_condensed_mean.csv")
+```
+
+
+## 10e. Long-format comparison table (one row per SBI, one column per value)
+
+Each SBI type gets one row, with a separate column for every `Gene type`/`System type`/`HMM` value holding its mean occurrence per isolate, plus an `n isolates` column showing how many isolates that row is based on.
+
+```{r}
+#| label: sbi-long-table
+
+# Helper: mean occurrences per isolate, long format (one row per sbi x value)
+build_category_means_long <- function(value_col, category_name) {
+  sbi_meta %>%
+    count(sbi, sample, {{ value_col }}) %>%
+    complete(nesting(sbi, sample), {{ value_col }}, fill = list(n = 0)) %>%
+    group_by(sbi, {{ value_col }}) %>%
+    summarise(mean_n = round(mean(n), 1), .groups = "drop") %>%
+    rename(Value = {{ value_col }}) %>%
+    mutate(Category = category_name, .before = 1)
+}
+
+gene_type_long   <- build_category_means_long(gene_type, "Gene type")
+system_type_long <- build_category_means_long(system_type, "System type")
+hmm_long         <- build_category_means_long(hmm, "HMM")
+
+# Order rows by category first (Gene type, System type, HMM), so columns
+# appear grouped in that order once pivoted wide below
+sbi_long_all <- bind_rows(gene_type_long, system_type_long, hmm_long) %>%
+  mutate(Category = factor(Category, levels = c("Gene type", "System type", "HMM"))) %>%
+  arrange(Category, Value)
+
+# Transpose: one row per SBI, one column per value
+sbi_wide_table <- sbi_long_all %>%
+  select(sbi, Value, mean_n) %>%
+  pivot_wider(names_from = Value, values_from = mean_n, values_fill = 0) %>%
+  left_join(sbi_n_isolates, by = "sbi") %>%
+  rename(SBI = sbi, `n isolates` = n_isolates) %>%
+  relocate(`n isolates`, .after = SBI) %>%
+  arrange(SBI)
+
+# Column names belonging to each category, for the spanner labels below
+gene_type_cols   <- unique(gene_type_long$Value)
+system_type_cols <- unique(system_type_long$Value)
+hmm_cols         <- unique(hmm_long$Value)
+
+sbi_wide_table %>%
+  gt() %>%
+  tab_header(title = "Mean occurrences per isolate by SBI type") %>%
+  tab_spanner(label = "Gene type", columns = all_of(gene_type_cols)) %>%
+  tab_spanner(label = "System type", columns = all_of(system_type_cols)) %>%
+  tab_spanner(label = "HMM", columns = all_of(hmm_cols)) %>%
+  cols_align(align = "left", columns = SBI)
+
+write_csv(sbi_wide_table, "data/sbi_wide_table.csv")
+```
+
+
+## 10f. Heatmap version
+
+Same data as 10e's table, as a heatmap instead. `facet_grid()` on `Category` reproduces the Gene type/System type/HMM grouping as strip labels above each block of columns, matching the spanners in the table. Value labels are shown directly in each tile since there are only 5 SBI rows.
+
+```{r}
+#| label: sbi-heatmap
+#| fig-width: 14
+#| fig-height: 4
+
+ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(aes(label = mean_n), size = 2.8, color = "black") +
+  scale_fill_gradient(low = "grey95", high = "darkblue", name = "Mean\noccurrences") +
+  facet_grid(~ Category, scales = "free_x", space = "free_x") +
+  labs(x = NULL, y = "SBI", title = "Mean occurrences per isolate by SBI type") +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank()
+  )
+```
