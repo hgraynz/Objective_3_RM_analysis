@@ -797,7 +797,7 @@ Same data as 10e's table, as a heatmap instead. `facet_grid()` on `Category` rep
 ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
   geom_tile(color = "white", linewidth = 0.3) +
   geom_text(aes(label = mean_n), size = 2.8, color = "black") +
-  scale_fill_gradient(low = "grey95", high = "darkblue", name = "Mean\noccurrences") +
+  scale_fill_gradient(low = "grey98", high = "dodgerblue", name = "Mean\noccurrences") +
   facet_grid(~ Category, scales = "free_x", space = "free_x") +
   labs(x = NULL, y = "SBI") +
   theme_minimal(base_size = 10) +
@@ -807,4 +807,296 @@ ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
     strip.text = element_text(face = "bold"),
     panel.grid = element_blank()
   )
+```
+
+```{r}
+#| label: sbi-heatmap
+#| fig-width: 14
+#| fig-height: 4
+#| dev: "ragg_png"
+
+library(patchwork)
+
+# Preserve the existing column order (Category, then Value alphabetically)
+value_order <- unique(sbi_long_all$Value)
+
+sbi_long_all <- sbi_long_all %>%
+  mutate(Value = factor(Value, levels = value_order))
+
+# A value is "constant" if its mean occurrence is identical across every SBI group
+label_colors <- sbi_long_all %>%
+  distinct(Value, Category) %>%
+  left_join(
+    sbi_long_all %>%
+      group_by(Value) %>%
+      summarise(constant = n_distinct(mean_n) == 1, .groups = "drop"),
+    by = "Value"
+  )
+
+# ---- Main heatmap (x-axis text hidden - replaced by the label strip below) ----
+heatmap_plot <- ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  geom_text(aes(label = mean_n), size = 3, color = "black") +
+  scale_fill_gradient(low = "grey98", high = "dodgerblue", name = "Mean\noccurrences") +
+  facet_grid(~ Category, scales = "free_x", space = "free_x") +
+  labs(x = NULL, y = "SBI") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.y = element_text(size = 8)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.background = element_rect(fill = "grey98", color = NA),
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank()
+  )
+
+# ---- Label strip: each Value plotted as its own coloured text ----
+label_plot <- ggplot(
+  label_colors,
+  aes(x = Value, y = 1, label = Value, color = constant)
+) +
+  geom_text(
+    angle = 45,
+    hjust = 1,
+    vjust = 1,
+    size = 3,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = c(`TRUE` = "black", `FALSE` = "dodgerblue")
+  ) +
+  facet_grid(
+    ~ Category,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    expand = c(0, 0)
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_void() +
+  theme(
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    plot.margin = margin(
+      t = 0,
+      r = 5,
+      b = 55,
+      l = 5
+    )
+  )
+
+# ---- Stack heatmap + label strip ----
+heatmap_plot / label_plot +
+  plot_layout(heights = c(2.5, 1))
+
+
+ggsave(
+  "figures/sbi_heatmap.pdf",
+  plot = heatmap_plot / label_plot +
+    plot_layout(heights = c(2.5, 0.8)),
+  width = 14,
+  height = 5,
+  units = "in",
+  bg = "white"
+)
+```
+
+```{r old_code}
+# ---- Label strip: each Value plotted as its own coloured text ----
+label_plot <- ggplot(label_colors, aes(x = Value, y = 1, label = Value, color = constant)) +
+  geom_text(angle = 45, hjust = 1, size = 3, show.legend = FALSE) +
+  scale_color_manual(values = c(`TRUE` = "black", `FALSE` = "dodgerblue")) +
+  facet_grid(~ Category, scales = "free_x", space = "free_x") +
+  theme_void() +
+  theme(strip.text = element_blank(), strip.background = element_blank())
+
+# ---- Stack heatmap + label strip, aligned by facet ----
+heatmap_plot / label_plot + plot_layout(heights = c(3, 1))
+
+ggsave(file="figures/Mean_occurances_by_SBI_labels.png", width=12)
+```
+
+
+```{r chatGPT}
+#| label: sbi-heatmap
+#| fig-width: 14
+#| fig-height: 5
+#| dev: "ragg_png"
+
+library(ggplot2)
+library(dplyr)
+
+# Preserve the existing column order
+value_order <- unique(sbi_long_all$Value)
+
+sbi_long_all <- sbi_long_all %>%
+  mutate(Value = factor(Value, levels = value_order))
+
+# Identify constant values
+label_colors <- sbi_long_all %>%
+  distinct(Value, Category) %>%
+  left_join(
+    sbi_long_all %>%
+      group_by(Value) %>%
+      summarise(
+        constant = n_distinct(mean_n) == 1,
+        .groups = "drop"
+      ),
+    by = "Value"
+  )
+
+# Use a y position below the heatmap
+label_y <- min(as.numeric(sbi_long_all$sbi)) - 0.8
+
+ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
+
+  # Heatmap
+  geom_tile(
+    color = "white",
+    linewidth = 0.3
+  ) +
+
+  # Numbers in cells
+  geom_text(
+    aes(label = mean_n),
+    size = 2.8,
+    color = "black"
+  ) +
+
+  # Coloured Value labels
+  geom_text(
+    data = label_colors,
+    aes(
+      x = Value,
+      y = label_y,
+      label = Value,
+      color = constant
+    ),
+    angle = 45,
+    hjust = 1,
+    vjust = 1,
+    size = 3,
+    inherit.aes = FALSE
+  ) +
+
+  scale_fill_gradient(
+    low = "grey98",
+    high = "dodgerblue",
+    name = "Mean\noccurrences"
+  ) +
+
+  scale_color_manual(
+    values = c(
+      `TRUE` = "black",
+      `FALSE` = "dodgerblue"
+    )
+  ) +
+
+  facet_grid(
+    ~ Category,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+
+  # Make room underneath the heatmap for the labels
+  scale_y_discrete(
+    expand = expansion(add = c(1.5, 0.5))
+  ) +
+
+  labs(
+    x = NULL,
+    y = "SBI",
+    title = "Mean occurrences per isolate by SBI type"
+  ) +
+
+  theme_minimal(base_size = 10) +
+
+  theme(
+    # Hide the normal x-axis labels
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+
+    strip.background = element_rect(
+      fill = "grey90",
+      color = NA
+    ),
+
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank(),
+
+    # Keep the labels close to the heatmap
+    plot.margin = margin(
+      t = 5,
+      r = 10,
+      b = 20,
+      l = 10
+    )
+  )
+```
+
+
+## 11. Upset plot of SBI by sample site
+
+Same data as 10e's table, as a heatmap instead. `facet_grid()` on `Category` reproduces the Gene type/System type/HMM grouping as strip labels above each block of columns, matching the spanners in the table. Value labels are shown directly in each tile since there are only 5 SBI rows.
+
+```{r}
+#| label: sbi-upsetplot
+#| fig-width: 14
+#| fig-height: 4
+
+# Loading Libraries
+library(ggplot2) 
+library(RColorBrewer) 
+library(ComplexUpset) 
+library(readxl)
+
+# ---- 1. Read metadata -----------------------------------------------
+metadata_path <- "data/isolate_metadata.csv"   # <-- change to your actual metadata file path
+metadata <- read_csv("~/Objective_3/Objective_3_RM_analysis/data/metadata_Apr26.csv", show_col_types = FALSE) %>%
+  clean_names()   # -> isolate_id, farm_id, sample_site, total_length, total_contigs,
+                   #    gc_percent, n50, l90, sbi, lactose, sorbitol, surcrose, stx_gene
+
+# Join key: df$sample and metadata's isolate_id now match directly
+# (both e.g. "EcCa437a") since the "fix_" prefix was stripped in Setup.
+metadata <- metadata %>%
+  rename(sample = isolate_id) %>%
+  mutate(farm_id = as.factor(farm_id))   # farm ID is categorical, not numeric
+
+#specifying names used for the antibiotic labels (order is important for the genes, it needs to be reversed here to appear in the order you want)
+sbi_vec <- c("AWY2a", "AY2a", "ASY2c", "SY2c", "WY12a") 
+
+names(sbi_vec) <- sbi_vec
+
+metadata$sample_site<- factor(metadata$sample_site, levels=c("Farm", "Lairage", "Hide", "Pre-intervention", "Post-intervention"))
+
+
+# constructing the plot with ggplot2 
+par(oma=c(0,0,2,0))
+
+SBI_139_upset_upset<-upset(
+  metadata,
+  sbi_vec,
+  name = "Virulence gene combination", 
+  base_annotations=list(
+    'Intersection size'=intersection_size(
+      counts=TRUE,
+      mapping=aes(fill=sample_site)
+    )
+    + geom_bar(stat="identity") 
+    + ylab('Number of isolates')
+    + labs(fill = "Sample site") +
+      scale_y_continuous(breaks = c(0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)) 
+  ), 
+  sort_sets=F,
+  width_ratio=0.1,
+  stripes='white'
+) & scale_fill_manual(values = c("#88ccee", "#44aa99", "#DDCC77", "#cc6677", "#332288")) 
+
+
+ggsave(file="Figures/Genes_139_upset_23Feb26.svg", plot=Genes_139_upset_upset, width=12)
+
+#export as 1000 x 813 soemthing (updates automatically) 
+
 ```
