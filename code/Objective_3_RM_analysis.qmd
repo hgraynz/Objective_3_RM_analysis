@@ -749,7 +749,15 @@ build_category_means_long <- function(value_col, category_name) {
     mutate(Category = category_name, .before = 1)
 }
 
-gene_type_long   <- build_category_means_long(gene_type, "Gene type")
+gene_type_labels <- c(
+  "IIG" = "Type IIG",
+  "MT"  = "Methyltransferase",
+  "RE"  = "Restriction Endonuclease",
+  "SP"  = "Specificity Subunit"
+)
+
+gene_type_long <- build_category_means_long(gene_type, "Gene type") %>%
+  mutate(Value = recode(Value, !!!gene_type_labels))
 system_type_long <- build_category_means_long(system_type, "System type")
 hmm_long         <- build_category_means_long(hmm, "HMM")
 
@@ -817,11 +825,33 @@ ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
 
 library(patchwork)
 
+# Remove any leftover "N" rows from a previous run of this chunk
+# (this chunk both reads and overwrites sbi_long_all, so without this,
+# re-running it would keep appending duplicate "N" columns)
+sbi_long_all <- sbi_long_all %>% filter(Category != "N")
+
+# ---- Add "N" column (hardcoded isolate counts per SBI) at the front ----
+sbi_n_manual <- tibble(
+  sbi = c("AY2a", "WY12a", "ASY2c", "SY2c", "AWY2a"),
+  mean_n = c(60, 34, 16, 15, 14)
+) %>%
+  mutate(Category = "N", Value = paste0("n=", sum(mean_n)))
+
+sbi_long_all <- bind_rows(sbi_long_all, sbi_n_manual)
+
 # Preserve the existing column order (Category, then Value alphabetically)
 value_order <- unique(sbi_long_all$Value)
 
 sbi_long_all <- sbi_long_all %>%
   mutate(Value = factor(Value, levels = value_order))
+
+# Relabel "HMM" to its full name for display; keep the same facet order,
+# with the new "N" column placed first
+sbi_long_all <- sbi_long_all %>%
+  mutate(
+    Category = recode(Category, "HMM" = "Hidden Markov Model"),
+    Category = factor(Category, levels = c("N", "Gene type", "System type", "Hidden Markov Model"))
+  )
 
 # A value is "constant" if its mean occurrence is identical across every SBI group
 label_colors <- sbi_long_all %>%
@@ -831,11 +861,21 @@ label_colors <- sbi_long_all %>%
       group_by(Value) %>%
       summarise(constant = n_distinct(mean_n) == 1, .groups = "drop"),
     by = "Value"
-  )
+  ) %>%
+  mutate(constant = if_else(Category == "N", TRUE, constant))   # force N label to black
 
 # ---- Main heatmap (x-axis text hidden - replaced by the label strip below) ----
-heatmap_plot <- ggplot(sbi_long_all, aes(x = Value, y = sbi, fill = mean_n)) +
-  geom_tile(color = "white", linewidth = 0.3) +
+# The "N" column uses a flat grey fill (not the gradient) so its much larger
+# values (14-60) don't stretch the colour scale used for the 0-13 range elsewhere
+heatmap_plot <- ggplot(sbi_long_all, aes(x = Value, y = sbi)) +
+  geom_tile(
+    data = filter(sbi_long_all, Category != "N"),
+    aes(fill = mean_n), color = "white", linewidth = 0.3
+  ) +
+  geom_tile(
+    data = filter(sbi_long_all, Category == "N"),
+    fill = "grey98", color = "white", linewidth = 0.3
+  ) +
   geom_text(aes(label = mean_n), size = 3, color = "black") +
   scale_fill_gradient(low = "grey98", high = "dodgerblue", name = "Mean\noccurrences") +
   facet_grid(~ Category, scales = "free_x", space = "free_x") +
@@ -891,7 +931,6 @@ label_plot <- ggplot(
 heatmap_plot / label_plot +
   plot_layout(heights = c(2.5, 1))
 
-
 ggsave(
   "figures/sbi_heatmap.pdf",
   plot = heatmap_plot / label_plot +
@@ -902,7 +941,6 @@ ggsave(
   bg = "white"
 )
 ```
-
 
 
 
