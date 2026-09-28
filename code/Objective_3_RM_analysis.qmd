@@ -33,6 +33,38 @@ df <- df %>%
 df <- df %>%
   mutate(contig = str_extract(gene, "^contig_[0-9]+"))
 
+# ---- Filter: keep only COMPLETE Type I RM systems -------------------------
+# A complete Type I system = one operon containing all three components
+# (RE, MT and SP) with system_type == "RM_Type_I". Type I hits in an operon
+# or singleton that lacks any of the three are removed.
+# Other system types (Type II, IIG, IV) are not touched.
+
+# 1. Completeness of every Type I operon (kept for checking, run before filtering)
+type1_completeness <- df %>%
+  filter(system_type == "RM_Type_I") %>%
+  group_by(sample, operon) %>%
+  summarise(
+    n_RE = sum(gene_type == "RE"),
+    n_MT = sum(gene_type == "MT"),
+    n_SP = sum(gene_type == "SP"),
+    .groups = "drop"
+  ) %>%
+  mutate(complete = n_RE >= 1 & n_MT >= 1 & n_SP >= 1)
+
+# 2. Drop Type I rows belonging to incomplete operons
+df <- df %>%
+  left_join(type1_completeness %>% select(sample, operon, complete),
+            by = c("sample", "operon")) %>%
+  filter(system_type != "RM_Type_I" | complete %in% TRUE) %>%
+  select(-complete)
+
+# 3. Safeguard: if a complete operon still has >1 hit of the same gene type,
+#    keep only the best (lowest) E-value one. No-op if there are no duplicates.
+df <- df %>%
+  group_by(sample, operon, system_type, gene_type) %>%
+  filter(system_type != "RM_Type_I" | row_number(evalue) == 1) %>%
+  ungroup()
+
 n_isolates <- n_distinct(df$sample)
 n_hmm <- n_distinct(df$hmm)
 ```
@@ -940,6 +972,184 @@ ggsave(
   units = "in",
   bg = "white"
 )
+```
+
+
+```{r heatmap}
+#| label: sbi-heatmap
+#| fig-width: 14
+#| fig-height: 4
+#| dev: "ragg_png"
+
+library(patchwork)
+
+# Remove any leftover "N" rows from a previous run of this chunk
+# (this chunk both reads and overwrites sbi_long_all, so without this,
+# re-running it would keep appending duplicate "N" columns)
+sbi_long_all <- sbi_long_all %>% filter(Category != "N")
+
+# ---- Add "N" column (hardcoded isolate counts per SBI) at the front ----
+sbi_n_manual <- tibble(
+  sbi = c("AY2a", "WY12a", "ASY2c", "SY2c", "AWY2a"),
+  mean_n = c(60, 34, 16, 15, 14)
+) %>%
+  mutate(Category = "N", Value = paste0("n=", sum(mean_n)))
+
+sbi_long_all <- bind_rows(sbi_long_all, sbi_n_manual)
+
+# ---- Logical display order within each block of columns ----
+gene_type_order <- c(
+  "Restriction Endonuclease",
+  "Methyltransferase",
+  "Specificity Subunit",
+  "Type IIG"
+)
+
+system_type_order <- c(
+  "RM_Type_I",
+  "RM_Type_II",
+  "RM_Type_IIG",
+  "Type_IV"
+)
+
+hmm_order <- c(
+  # Type I
+  "Type_I_REases_FAM_2.einsi_trimmed",
+  "Type_I_MTases_FAM_1",
+  "Type_I_S_52",
+  # Type II restriction enzymes
+  "Type_II_REase06",
+  "Type_II_REase22",
+  "Type_II_REase30",
+  # Type II methyltransferases (numeric, not alphabetical, order)
+  "Type_II_MTases_FAM_1",
+  "Type_II_MTases_FAM_2",
+  "Type_II_MTases_FAM_4",
+  "Type_II_MTases_FAM_6",
+  "Type_II_MTases_FAM_10",
+  "Type_II_MTases_FAM_17",
+  "Type_II_MTases_FAM_21",
+  "Type_II_MTases_FAM_36",
+  # Type IIG
+  "Type_IIG_5",
+  # Type IV
+  "GmrSD_N"
+)
+
+value_order <- c(
+  unique(sbi_n_manual$Value),
+  gene_type_order,
+  system_type_order,
+  hmm_order
+)
+
+# Safety net: any value not listed above is appended at the end (with a warning)
+missing_values <- setdiff(as.character(unique(sbi_long_all$Value)), value_order)
+if (length(missing_values) > 0) {
+  warning("Values not in the manual order (appended at the end): ",
+          paste(missing_values, collapse = ", "))
+  value_order <- c(value_order, missing_values)
+}
+
+sbi_long_all <- sbi_long_all %>%
+  mutate(Value = factor(as.character(Value), levels = value_order))
+
+# Relabel "HMM" to its full name for display; keep the same facet order,
+# with the new "N" column placed first
+sbi_long_all <- sbi_long_all %>%
+  mutate(
+    Category = recode(Category, "HMM" = "Hidden Markov Model"),
+    Category = factor(Category, levels = c("N", "Gene type", "System type", "Hidden Markov Model"))
+  )
+
+# A value is "constant" if its mean occurrence is identical across every SBI group
+label_colors <- sbi_long_all %>%
+  distinct(Value, Category) %>%
+  left_join(
+    sbi_long_all %>%
+      group_by(Value) %>%
+      summarise(constant = n_distinct(mean_n) == 1, .groups = "drop"),
+    by = "Value"
+  ) %>%
+  mutate(constant = if_else(Category == "N", TRUE, constant))   # force N label to black
+
+# ---- Main heatmap (x-axis text hidden - replaced by the label strip below) ----
+# The "N" column uses a flat grey fill (not the gradient) so its much larger
+# values (14-60) don't stretch the colour scale used for the 0-13 range elsewhere
+heatmap_plot <- ggplot(sbi_long_all, aes(x = Value, y = sbi)) +
+  geom_tile(
+    data = filter(sbi_long_all, Category != "N"),
+    aes(fill = mean_n), color = "white", linewidth = 0.3
+  ) +
+  geom_tile(
+    data = filter(sbi_long_all, Category == "N"),
+    fill = "grey98", color = "white", linewidth = 0.3
+  ) +
+  geom_text(aes(label = mean_n), size = 3, color = "black") +
+  scale_fill_gradient(low = "grey98", high = "dodgerblue", name = "Mean\noccurrences") +
+  facet_grid(~ Category, scales = "free_x", space = "free_x") +
+  labs(x = NULL, y = "SBI") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.y = element_text(size = 8)) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.background = element_rect(fill = "grey98", color = NA),
+    strip.text = element_text(face = "bold"),
+    panel.grid = element_blank()
+  )
+
+# ---- Label strip: each Value plotted as its own coloured text ----
+label_plot <- ggplot(
+  label_colors,
+  aes(x = Value, y = 1, label = Value, color = constant)
+) +
+  geom_text(
+    angle = 45,
+    hjust = 1,
+    vjust = 1,
+    size = 3,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = c(`TRUE` = "black", `FALSE` = "dodgerblue")
+  ) +
+  facet_grid(
+    ~ Category,
+    scales = "free_x",
+    space = "free_x"
+  ) +
+  scale_y_continuous(
+    limits = c(0, 1),
+    expand = c(0, 0)
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_void() +
+  theme(
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    plot.margin = margin(
+      t = 0,
+      r = 5,
+      b = 55,
+      l = 5
+    )
+  )
+
+# ---- Stack heatmap + label strip ----
+heatmap_plot / label_plot +
+  plot_layout(heights = c(2.5, 1))
+
+ggsave(
+  "figures/sbi_heatmap.pdf",
+  plot = heatmap_plot / label_plot +
+    plot_layout(heights = c(2.5, 0.8)),
+  width = 14,
+  height = 5,
+  units = "in",
+  bg = "white"
+)
+
 ```
 
 
